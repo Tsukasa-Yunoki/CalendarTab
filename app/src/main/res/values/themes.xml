@@ -1,0 +1,7 @@
+<resources>
+    <style name="Theme.CalendarKiosk" parent="Theme.AppCompat.NoActionBar">
+        <item name="colorPrimary">#000000</item>
+        <item name="android:windowBackground">#000000</item>
+        <item name="android:textColorPrimary">#FFFFFF</item>
+    </style>
+</resources>
