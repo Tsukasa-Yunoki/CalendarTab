@@ -29,7 +29,9 @@ public class MainActivity extends AppCompatActivity {
 
     private static final String PREF_NAME = "KioskPrefs_Final";
     private static final String K_MAX = "max", K_MIN = "min", K_OFF = "off", K_SIDE = "side", K_FOOT = "foot", K_RATIO = "ratio", K_W = "w", K_H = "h", K_AUTO = "auto", K_FIX = "fix", K_FOLD = "fold", K_SIDE_FOLD = "side_fold";
-    private static final String K_WORDS = "words", K_C_NOR = "c_nor", K_C_IMP = "c_imp", K_SHOW_FOOT = "show_foot";
+    private static final String K_WORDS = "words", K_C_NOR = "c_nor", K_C_IMP = "c_imp";
+    // フッター個別に制御するためのキー
+    private static final String K_SHOW_FOOT_1 = "show_foot_1", K_SHOW_FOOT_2 = "show_foot_2";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -44,12 +46,11 @@ public class MainActivity extends AppCompatActivity {
             if (tapCount == 3) { tapCount = 0; showTopMenu(); }
         });
 
-        // 更新ループの定義
         updateRunnable = new Runnable() {
             @Override
             public void run() {
                 fetchCalendarData();
-                handler.postDelayed(this, 10 * 60 * 1000); // 10分おき
+                handler.postDelayed(this, 10 * 60 * 1000);
             }
         };
         checkPermission();
@@ -58,7 +59,6 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onResume() {
         super.onResume();
-        // アプリに戻った時に即座に更新を開始
         handler.removeCallbacks(updateRunnable);
         handler.post(updateRunnable);
     }
@@ -90,29 +90,40 @@ public class MainActivity extends AppCompatActivity {
 
     private void showFontMenu() {
         SharedPreferences p = getSharedPreferences(PREF_NAME, MODE_PRIVATE);
-        String[] items = {"自動サイズ計算: " + (p.getBoolean(K_AUTO, true) ? "ON" : "OFF"), "メイン：上限", "メイン：下限", "メイン：補正", "メイン：固定サイズ", "サイド：サイズ", "概要：サイズ", "日付縮小率(%)"};
+        String[] items = {
+                "自動サイズ計算: " + (p.getBoolean(K_AUTO, true) ? "ON" : "OFF"),
+                "メイン：上限", "メイン：下限", "メイン：補正",
+                "メイン：固定サイズ", "サイド：サイズ", "概要：サイズ", "日付縮小率(%)"
+        };
         new AlertDialog.Builder(this).setItems(items, (d, i) -> {
             if(i==0) { p.edit().putBoolean(K_AUTO, !p.getBoolean(K_AUTO, true)).apply(); fetchCalendarData(); }
-            else if(i==1) showSB(items[i], K_MAX, 10, 80, 36);
-            else if(i==2) showSB(items[i], K_MIN, 8, 40, 16);
-            else if(i==3) showSB(items[i], K_OFF, -30, 30, 0);
-            else if(i==4) showSB(items[i], K_FIX, 10, 80, 25);
-            else if(i==5) showSB(items[i], K_SIDE, 8, 50, 14);
-            else if(i==6) showSB(items[i], K_FOOT, 8, 50, 18);
+            // 文字サイズの上限・下限の範囲を拡張 (例: 4sp〜120sp)
+            else if(i==1) showSB(items[i], K_MAX, 4, 120, 36);
+            else if(i==2) showSB(items[i], K_MIN, 4, 80, 16);
+            else if(i==3) showSB(items[i], K_OFF, -40, 40, 0);
+            else if(i==4) showSB(items[i], K_FIX, 4, 120, 25);
+            else if(i==5) showSB(items[i], K_SIDE, 4, 80, 14);
+            else if(i==6) showSB(items[i], K_FOOT, 4, 80, 18);
             else showSB(items[i], K_RATIO, 10, 100, 80);
         }).show();
     }
 
     private void showLayoutMenu() {
         SharedPreferences p = getSharedPreferences(PREF_NAME, MODE_PRIVATE);
-        boolean showFoot = p.getBoolean(K_SHOW_FOOT, true);
-        String[] items = {"フッター表示: " + (showFoot ? "ON" : "OFF"), "メイン幅(%)", "概要高さ(px)", "メイン左列上限", "サイド左列上限"};
+        boolean showFoot1 = p.getBoolean(K_SHOW_FOOT_1, true);
+        boolean showFoot2 = p.getBoolean(K_SHOW_FOOT_2, true);
+        String[] items = {
+                "フッター行1(概要): " + (showFoot1 ? "ON" : "OFF"),
+                "フッター行2(重要): " + (showFoot2 ? "ON" : "OFF"),
+                "メイン幅(%)", "概要高さ(px)", "メイン左列上限", "サイド左列上限"
+        };
         new AlertDialog.Builder(this).setItems(items, (d, i) -> {
-            if(i==0) { p.edit().putBoolean(K_SHOW_FOOT, !showFoot).apply(); fetchCalendarData(); }
-            else if(i==1) showSB(items[i], K_W, 20, 95, 67);
-            else if(i==2) showSB(items[i], K_H, 40, 500, 100);
-            else if(i==3) showSB(items[i], K_FOLD, 1, 20, 6);
-            else showSB(items[i], K_SIDE_FOLD, 1, 30, 10);
+            if(i==0) { p.edit().putBoolean(K_SHOW_FOOT_1, !showFoot1).apply(); fetchCalendarData(); }
+            else if(i==1) { p.edit().putBoolean(K_SHOW_FOOT_2, !showFoot2).apply(); fetchCalendarData(); }
+            else if(i==2) showSB(items[i], K_W, 20, 95, 67);
+            else if(i==3) showSB(items[i], K_H, 40, 500, 100);
+            else if(i==4) showSB(items[i], K_FOLD, 1, 30, 6);
+            else showSB(items[i], K_SIDE_FOLD, 1, 40, 10);
         }).show();
     }
 
@@ -182,7 +193,6 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void fetchCalendarData() {
-        // ★OSに対して「今すぐ同期して」とリクエスト（これが重要！）
         Bundle extras = new Bundle();
         extras.putBoolean(ContentResolver.SYNC_EXTRAS_MANUAL, true);
         extras.putBoolean(ContentResolver.SYNC_EXTRAS_EXPEDITED, true);
@@ -209,7 +219,7 @@ public class MainActivity extends AppCompatActivity {
         try {
             cursor = getContentResolver().query(builder.build(), new String[]{"title", "begin", "end", "calendar_color", "calendar_id", "allDay"}, null, null, "begin ASC");
             if (cursor == null) return;
-            ArrayList<EventData> mList = new ArrayList<>(), sList = new ArrayList<>();
+            ArrayList<EventData> rawMainList = new ArrayList<>(), sList = new ArrayList<>();
             StringBuilder tt = new StringBuilder(), imS = new StringBuilder();
             Set<String> mIds = p.getStringSet("m_ids", new HashSet<>()), fIds = p.getStringSet("f_ids", new HashSet<>());
             HashSet<String> seen = new HashSet<>(), seenTT = new HashSet<>();
@@ -230,7 +240,7 @@ public class MainActivity extends AppCompatActivity {
                 if (fIds.contains(cursor.getString(4)) && !seenTT.contains(key)) { tt.append(title).append("   "); seenTT.add(key); }
                 if (mIds.contains(cursor.getString(4)) && !seen.contains(key)) {
                     seen.add(key);
-                    boolean isMain = start <= tomE;
+                    boolean isMainCandidate = start <= tomE;
                     boolean isImportant = false;
                     for (String w : iWords) { if (!w.isEmpty() && title.contains(w)) { isImportant = true; break; } }
                     if (title.startsWith("★")) isImportant = true;
@@ -238,15 +248,35 @@ public class MainActivity extends AppCompatActivity {
                     Calendar cE = Calendar.getInstance(); cE.setTimeInMillis(end - 1);
                     boolean isMulti = cS.get(Calendar.DAY_OF_YEAR) != cE.get(Calendar.DAY_OF_YEAR);
                     EventData ed = new EventData(title, start, end, cursor.getInt(3), isAllDay, isImportant, isMulti);
-                    if (isMain) mList.add(ed); else sList.add(ed);
+
+                    if (isMainCandidate) rawMainList.add(ed); else sList.add(ed);
+
                     if (isImportant) {
                         SimpleDateFormat sdf = new SimpleDateFormat(isMulti ? "dd(E)-dd(E)" : "dd(E)", Locale.JAPAN);
                         imS.append("★").append(sdf.format(new Date(start))).append(" ").append(title).append("   ");
                     }
                 }
             }
+
+            // メイン側の溢れ（オーバーフロー）処理
+            // メインの最大表示件数 = 左列上限(K_FOLD) × 2 (左右2列分)
+            int mainFold = p.getInt(K_FOLD, 6);
+            int mainMaxCapacity = mainFold * 2;
+
+            ArrayList<EventData> mList = new ArrayList<>();
+            if (rawMainList.size() > mainMaxCapacity) {
+                // 容量内に収まる分をメインへ
+                mList.addAll(rawMainList.subList(0, mainMaxCapacity));
+                // 溢れた分をサイド側の先頭に追加
+                List<EventData> overflow = rawMainList.subList(mainMaxCapacity, rawMainList.size());
+                sList.addAll(0, overflow);
+            } else {
+                mList.addAll(rawMainList);
+            }
+
             renderArea(mList, true, p, cNor, cI);
             renderArea(sList, false, p, cNor, cI);
+
             float fs = p.getInt(K_FOOT, 18);
             footerTimeTable.setText(tt); footerTimeTable.setTextSize(fs); footerTimeTable.setTextColor(cNor);
             footerImportant.setText(imS); footerImportant.setTextSize(fs); footerImportant.setTextColor(cI);
@@ -264,7 +294,7 @@ public class MainActivity extends AppCompatActivity {
         if (isM) {
             if (p.getBoolean(K_AUTO, true)) {
                 float auto = (count > 0) ? (450f / Math.max(1, (count > fold ? (count/2+1) : count))) : p.getInt(K_MAX, 36);
-                fs = Math.max(8, Math.max(p.getInt(K_MIN, 16), Math.min(p.getInt(K_MAX, 36), auto)) + p.getInt(K_OFF, 0));
+                fs = Math.max(4, Math.max(p.getInt(K_MIN, 16), Math.min(p.getInt(K_MAX, 36), auto)) + p.getInt(K_OFF, 0));
             } else fs = p.getInt(K_FIX, 25);
         } else fs = p.getInt(K_SIDE, 14);
         for (int i = 0; i < count; i++) {
@@ -302,8 +332,15 @@ public class MainActivity extends AppCompatActivity {
         mainContainer.setLayoutParams(new LinearLayout.LayoutParams(0, -1, w));
         sideContainer.setLayoutParams(new LinearLayout.LayoutParams(0, -1, 10 - w));
 
-        boolean showFoot = p.getBoolean(K_SHOW_FOOT, true);
-        if (showFoot) {
+        // 2行の個別表示設定を取得
+        boolean showFoot1 = p.getBoolean(K_SHOW_FOOT_1, true);
+        boolean showFoot2 = p.getBoolean(K_SHOW_FOOT_2, true);
+
+        footerTimeTable.setVisibility(showFoot1 ? View.VISIBLE : View.GONE);
+        footerImportant.setVisibility(showFoot2 ? View.VISIBLE : View.GONE);
+
+        // どちらか一方でもONならフッターエリアを表示、両方OFFなら非表示
+        if (showFoot1 || showFoot2) {
             footerArea.setVisibility(View.VISIBLE);
             footerArea.getLayoutParams().height = (int) (p.getInt(K_H, 100) * getResources().getDisplayMetrics().density);
         } else {
