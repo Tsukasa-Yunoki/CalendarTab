@@ -1,0 +1,11 @@
+[Unit]
+Description=Echo Show 5 now-playing bar daemon (CalendarTab)
+After=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 /home/tsukasa/echo-nowplaying/nowplaying_daemon.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

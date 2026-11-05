@@ -8,6 +8,7 @@ import android.graphics.Color;
 import android.net.Uri;
 import android.os.*;
 import android.provider.CalendarContract;
+import android.util.Base64;
 import android.text.*;
 import android.text.style.*;
 import android.view.*;
@@ -16,6 +17,7 @@ import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
+import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.*;
 
@@ -26,6 +28,13 @@ public class MainActivity extends AppCompatActivity {
     private Runnable updateRunnable;
     private int tapCount = 0;
     private long lastTapTime = 0;
+
+    // 再生中表示 (Ubuntu側デーモンから adb ブロードキャストで受け取る)
+    public static final String ACTION_NOW_PLAYING = "my.app.calendarkiosk.NOW_PLAYING";
+    private LinearLayout nowPlayingArea;
+    private TextView npTitle, npLyric;
+    private BroadcastReceiver npReceiver;
+    private Runnable npHideRunnable;
 
     private static final String PREF_NAME = "KioskPrefs_Final";
     private static final String K_MAX = "max", K_MIN = "min", K_OFF = "off", K_SIDE = "side", K_FOOT = "foot", K_RATIO = "ratio", K_W = "w", K_H = "h", K_AUTO = "auto", K_FIX = "fix", K_FOLD = "fold", K_SIDE_FOLD = "side_fold";
@@ -53,7 +62,48 @@ public class MainActivity extends AppCompatActivity {
                 handler.postDelayed(this, 10 * 60 * 1000);
             }
         };
+        setupNowPlaying();
         checkPermission();
+    }
+
+    private static String b64decode(String s) {
+        if (s == null || s.isEmpty()) return "";
+        try { return new String(Base64.decode(s, Base64.DEFAULT), StandardCharsets.UTF_8); }
+        catch (Exception e) { return ""; }
+    }
+
+    private void setupNowPlaying() {
+        npHideRunnable = () -> { if (nowPlayingArea != null) nowPlayingArea.setVisibility(View.GONE); };
+        npReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                String state = intent.getStringExtra("state");
+                handler.removeCallbacks(npHideRunnable);
+                if (state == null || state.equals("stopped")) {
+                    nowPlayingArea.setVisibility(View.GONE);
+                    return;
+                }
+                String title = b64decode(intent.getStringExtra("title_b64"));
+                String artist = b64decode(intent.getStringExtra("artist_b64"));
+                String lyric = b64decode(intent.getStringExtra("lyric_b64"));
+                String head = "♪ " + title + (artist.isEmpty() ? "" : "  /  " + artist);
+                if (state.equals("paused")) head += "  (一時停止)";
+                npTitle.setText(head);
+                npTitle.setSelected(true);
+                npLyric.setText(lyric);
+                npLyric.setVisibility(lyric.isEmpty() ? View.GONE : View.VISIBLE);
+                nowPlayingArea.setVisibility(View.VISIBLE);
+                // デーモンが死んだ場合にバーが残り続けないための保険
+                handler.postDelayed(npHideRunnable, 30 * 1000);
+            }
+        };
+        registerReceiver(npReceiver, new IntentFilter(ACTION_NOW_PLAYING));
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        if (npReceiver != null) { try { unregisterReceiver(npReceiver); } catch (Exception ignored) {} }
     }
 
     @Override
@@ -69,6 +119,8 @@ public class MainActivity extends AppCompatActivity {
         footerArea = findViewById(R.id.footerArea); mainContainer = findViewById(R.id.mainContainer); sideContainer = findViewById(R.id.sideContainer);
         footerTimeTable = findViewById(R.id.footerTimeTable); footerImportant = findViewById(R.id.footerImportant);
         statusText = findViewById(R.id.statusText);
+        nowPlayingArea = findViewById(R.id.nowPlayingArea);
+        npTitle = findViewById(R.id.npTitle); npLyric = findViewById(R.id.npLyric);
         if(footerTimeTable != null) footerTimeTable.setSelected(true);
         if(footerImportant != null) footerImportant.setSelected(true);
     }
