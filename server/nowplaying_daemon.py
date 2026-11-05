@@ -1,34 +1,35 @@
 #!/usr/bin/env python3
-"""Echo Show 5 now-playing daemon.
+"""Echo Show 5 now-playing daemon (Bluetooth-only edition).
 
 Polls the Echo Show 5 (LineageOS) over adb/Wi-Fi for the Bluetooth media
-session, resolves the track against the local NetEase API (search + lyric),
-computes the current LRC line, and broadcasts updates to CalendarTab's
-top now-playing bar via adb broadcasts.
+session and broadcasts updates to CalendarTab's top now-playing bar.
+
+No NetEase API is used at all (by design, to keep the listening-stats
+importer's view of the API/DB stable):
+- Song title / artists come from the AVRCP artist field, where NetEase
+  packs "<song> (<cn>) - <artists>".
+- The lyric line comes from the AVRCP title field, which NetEase rotates
+  in sync with playback (credits, then the current lyric line). Credit
+  entries are filtered out; anything that is not a lyric line is blanked.
 
 Strings are sent base64-encoded so adb shell argument parsing can never
 mangle Japanese/Chinese text or spaces.
 """
 import base64
-import json
 import os
 import re
 import subprocess
 import time
-import urllib.parse
-import urllib.request
 
 DEVICE = os.environ.get("ECHO_DEVICE", "192.168.0.22:5555")
 ADB = os.path.expanduser("~/platform-tools/adb")
-API_BASE = "http://127.0.0.1:3000"
-COOKIE_FILE = os.path.expanduser("~/netease-verification/.netease_cookie")
 ACTION = "my.app.calendarkiosk.NOW_PLAYING"
+TARGET_PKG = "my.app.calendarkiosk.roze"
 POLL_SEC = 1
 HEARTBEAT_SEC = 10
-LEAD_MS = 1000  # show each lyric line this early to cancel polling latency
 LOG_FILE = os.path.expanduser("~/echo-nowplaying/daemon.log")
 
-_cookie = None
+CREDIT_RE = re.compile(r"^(作词|作曲|编曲|作詞|編曲|演唱|出品|制作|词|曲)\s*[:：]")
 
 
 def log(msg):
@@ -61,124 +62,47 @@ def ensure_connected():
 
 
 def fetch_session():
-    """Return dict(state, position_ms, updated_ms, uptime_ms, title, artist, album) or None."""
+    """Return dict(state, title, artist, album) from the BT media session, or None."""
     try:
-        r = adb("shell", "dumpsys media_session; echo __UPTIME__; cat /proc/uptime", timeout=25)
+        r = adb("shell", "dumpsys media_session", timeout=25)
     except Exception as e:
         log(f"dumpsys error: {e}")
         return None
     out = r.stdout or ""
-    m = re.search(r"__UPTIME__\s*\n\s*([\d.]+)", out)
-    uptime_ms = int(float(m.group(1)) * 1000) if m else None
-    # Bluetooth session block only
     idx = out.find("BluetoothMediaBrowserService")
     if idx < 0:
         return None
     block = out[idx:idx + 6000]
-    sm = re.search(r"state=PlaybackState \{state=(\d+), position=(\d+), .*?updated=(\d+)", block)
+    sm = re.search(r"state=PlaybackState \{state=(\d+),", block)
     dm = re.search(r"metadata: size=\d+, description=(.*)", block)
     if not sm or not dm:
         return None
-    state = int(sm.group(1))
-    pos = int(sm.group(2))
-    updated = int(sm.group(3))
     desc = dm.group(1).strip()
     parts = desc.split(", ")
     title = parts[0] if parts else ""
     album = parts[-1] if len(parts) >= 2 else ""
     artist = ", ".join(parts[1:-1]) if len(parts) >= 3 else ""
-    return {"state": state, "position": pos, "updated": updated,
-            "uptime_ms": uptime_ms, "title": title, "artist": artist, "album": album}
+    return {"state": int(sm.group(1)), "title": title, "artist": artist, "album": album}
 
 
-def api(path, params):
-    global _cookie
-    if _cookie is None:
-        try:
-            _cookie = open(COOKIE_FILE, encoding="utf-8").read().strip()
-        except Exception:
-            _cookie = ""
-    q = urllib.parse.urlencode(params)
-    req = urllib.request.Request(f"{API_BASE}{path}?{q}", headers={"Cookie": _cookie})
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        return json.load(resp)
-
-
-CREDIT_RE = re.compile(r"^(作词|作曲|编曲|作詞|編曲|词曲|制作人|出品人|监制|Produced|Composer|Lyricist|Arranger)\b")
-
-
-def parse_lrc(text):
-    lines = []
-    for raw in text.splitlines():
-        times = re.findall(r"\[(\d+):(\d+(?:\.\d+)?)\]", raw)
-        body = re.sub(r"\[[^\]]*\]", "", raw).strip()
-        if not times or not body:
-            continue
-        if CREDIT_RE.match(body):
-            continue  # credit lines are not lyrics; intro stays blank instead
-        for mm, ss in times:
-            lines.append((int((int(mm) * 60 + float(ss)) * 1000), body))
-    lines.sort()
-    return lines
-
-
-def resolve_track(sess):
-    """Best-effort NetEase match. Returns (song_id, name, artists_str, lrc_lines) or None."""
-    raw = f"{sess['title']} {sess['artist']} {sess['album']}"
-    queries = []
-    # NetEase sometimes packs "<song> (<cn>) - <artists>" into the artist field
+def parse_bt(sess):
+    """Return (display_title, display_artists, lyric_line) purely from BT fields."""
     m = re.match(r"^(.*?)\s*\([^)]*\)\s*-\s*(.+)$", sess["artist"])
-    packed_name, packed_artists = (m.group(1).strip(), m.group(2).strip()) if m else (None, None)
-    for q in (packed_name, sess["album"], sess["title"]):
-        if q and q not in queries:
-            queries.append(q)
-    best = None
-    for q in queries:
-        try:
-            res = api("/search", {"keywords": q, "type": 1, "limit": 8})
-        except Exception as e:
-            log(f"search error ({q}): {e}")
-            continue
-        for song in res.get("result", {}).get("songs", []):
-            name = song.get("name", "")
-            album = (song.get("album") or {}).get("name", "")
-            artists = [a.get("name", "") for a in song.get("artists", [])]
-            score = 0
-            if packed_name and name == packed_name:
-                score += 5
-            if name and name == sess["album"]:
-                score += 4
-            if name and name == sess["title"]:
-                score += 4
-            if album and album == sess["album"]:
-                score += 2
-            for a in artists:
-                if a and a in raw:
-                    score += 2
-            if score and (best is None or score > best[0]):
-                best = (score, song)
-    if not best or best[0] < 4:
-        log(f"no confident match for title={sess['title']!r} artist={sess['artist']!r} album={sess['album']!r} best={best}")
-        return None
-    song = best[1]
-    sid = song["id"]
-    name = song.get("name", "")
-    artists_str = ", ".join(a.get("name", "") for a in song.get("artists", []))
-    lines = []
-    try:
-        ly = api("/lyric", {"id": sid})
-        lines = parse_lrc((ly.get("lrc") or {}).get("lyric", ""))
-    except Exception as e:
-        log(f"lyric error (id={sid}): {e}")
-    log(f"resolved: id={sid} name={name!r} artists={artists_str!r} score={best[0]} lrc_lines={len(lines)}")
-    return (sid, name, artists_str, lines)
+    if not m:
+        # Not NetEase-style metadata: title is a real title, no lyric rotation.
+        return sess["title"], sess["artist"], ""
+    song = m.group(1).strip()
+    artists = ", ".join(a.strip() for a in re.split(r"[/,]", m.group(2)) if a.strip())
+    cand = sess["title"].strip()
+    if not cand or cand == song or cand == sess["album"] or CREDIT_RE.match(cand) or len(cand) > 60:
+        lyric = ""
+    else:
+        lyric = cand
+    return song, artists, lyric
 
 
 def b64(s):
     return base64.b64encode((s or "").encode("utf-8")).decode("ascii")
-
-
-TARGET_PKG = "my.app.calendarkiosk.roze"
 
 
 def broadcast(state, title="", artist="", lyric=""):
@@ -193,25 +117,13 @@ def broadcast(state, title="", artist="", lyric=""):
         log(f"broadcast error: {e}")
 
 
-def current_line(lines, pos_ms):
-    cur = ""
-    for t, text in lines:
-        if t <= pos_ms + LEAD_MS:
-            cur = text
-        else:
-            break
-    return cur
-
-
 def main():
     os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
-    log("daemon start")
+    log("daemon start (bluetooth-only)")
     last_key = None
     last_sent = 0.0
-    track_cache = {}
-    cur_track_key = None
-    cur_resolved = None
     stopped_sent = True
+    last_track = None
     while True:
         loop_start = time.time()
         try:
@@ -227,42 +139,16 @@ def main():
                 time.sleep(POLL_SEC)
                 continue
             stopped_sent = False
-            # NetEase rotates the BT title field (credits / current lyric line),
-            # so track identity must use the packed song name + artist + album.
-            pm = re.match(r"^(.*?)\s*\([^)]*\)\s*-\s*(.+)$", sess["artist"])
-            stable_title = pm.group(1).strip() if pm else sess["title"]
-            key_track = (stable_title, sess["artist"], sess["album"])
-            if key_track != cur_track_key:
-                cur_track_key = key_track
-                if key_track in track_cache:
-                    cur_resolved = track_cache[key_track]
-                else:
-                    cur_resolved = resolve_track(sess)
-                    track_cache[key_track] = cur_resolved
-            if cur_resolved:
-                disp_title, disp_artist, lines = cur_resolved[1], cur_resolved[2], cur_resolved[3]
-            else:
-                disp_title = stable_title or sess["title"]
-                disp_artist = (pm.group(2).strip() if pm else sess["artist"])
-                lines = []
-            if sess["state"] == 3 and sess["uptime_ms"]:
-                pos = sess["position"] + max(0, sess["uptime_ms"] - sess["updated"])
-            else:
-                pos = sess["position"]
-            if lines:
-                lyric = current_line(lines, pos)
-            else:
-                # Fallback: NetEase rotates what looks like the current lyric
-                # line through the BT title field. Use it when it is not a
-                # credit line and not the song name itself.
-                cand = sess["title"].strip()
-                credit = any(w in cand for w in ("作词", "作曲", "编曲", "作詞", "編曲", "演唱"))
-                lyric = cand if (cand and cand != stable_title and not credit and len(cand) <= 60) else ""
+            title, artists, lyric = parse_bt(sess)
+            track_key = (title, artists, sess["album"])
+            if track_key != last_track:
+                last_track = track_key
+                log(f"track: {title!r} / {artists!r}")
             state_str = "playing" if sess["state"] == 3 else "paused"
-            key = (state_str, disp_title, lyric)
+            key = (state_str, title, lyric)
             now = time.time()
             if key != last_key or now - last_sent >= HEARTBEAT_SEC:
-                broadcast(state_str, disp_title, disp_artist, lyric)
+                broadcast(state_str, title, artists, lyric)
                 last_key = key
                 last_sent = now
         except Exception as e:
