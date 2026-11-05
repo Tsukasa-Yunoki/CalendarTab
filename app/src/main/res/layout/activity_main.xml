@@ -15,7 +15,6 @@
             android:layout_height="wrap_content"
             android:layout_alignParentTop="true"
             android:orientation="vertical"
-            android:background="#101418"
             android:paddingStart="10dp"
             android:paddingEnd="10dp"
             android:paddingTop="4dp"
@@ -28,7 +27,7 @@
                 android:singleLine="true"
                 android:ellipsize="marquee"
                 android:marqueeRepeatLimit="marquee_forever"
-                android:textColor="#B0BEC5"
+                android:textColor="#CCCCCC"
                 android:textSize="13sp" />
             <TextView
                 android:id="@+id/npLyric"

@@ -23,8 +23,9 @@ ADB = os.path.expanduser("~/platform-tools/adb")
 API_BASE = "http://127.0.0.1:3000"
 COOKIE_FILE = os.path.expanduser("~/netease-verification/.netease_cookie")
 ACTION = "my.app.calendarkiosk.NOW_PLAYING"
-POLL_SEC = 3
+POLL_SEC = 1
 HEARTBEAT_SEC = 10
+LEAD_MS = 1000  # show each lyric line this early to cancel polling latency
 LOG_FILE = os.path.expanduser("~/echo-nowplaying/daemon.log")
 
 _cookie = None
@@ -103,6 +104,9 @@ def api(path, params):
         return json.load(resp)
 
 
+CREDIT_RE = re.compile(r"^(作词|作曲|编曲|作詞|編曲|词曲|制作人|出品人|监制|Produced|Composer|Lyricist|Arranger)\b")
+
+
 def parse_lrc(text):
     lines = []
     for raw in text.splitlines():
@@ -110,6 +114,8 @@ def parse_lrc(text):
         body = re.sub(r"\[[^\]]*\]", "", raw).strip()
         if not times or not body:
             continue
+        if CREDIT_RE.match(body):
+            continue  # credit lines are not lyrics; intro stays blank instead
         for mm, ss in times:
             lines.append((int((int(mm) * 60 + float(ss)) * 1000), body))
     lines.sort()
@@ -172,8 +178,11 @@ def b64(s):
     return base64.b64encode((s or "").encode("utf-8")).decode("ascii")
 
 
+TARGET_PKG = "my.app.calendarkiosk.roze"
+
+
 def broadcast(state, title="", artist="", lyric=""):
-    args = ["shell", "am", "broadcast", "-a", ACTION,
+    args = ["shell", "am", "broadcast", "-a", ACTION, "-p", TARGET_PKG,
             "--es", "state", state,
             "--es", "title_b64", b64(title),
             "--es", "artist_b64", b64(artist),
@@ -187,7 +196,7 @@ def broadcast(state, title="", artist="", lyric=""):
 def current_line(lines, pos_ms):
     cur = ""
     for t, text in lines:
-        if t <= pos_ms + 200:
+        if t <= pos_ms + LEAD_MS:
             cur = text
         else:
             break
@@ -204,6 +213,7 @@ def main():
     cur_resolved = None
     stopped_sent = True
     while True:
+        loop_start = time.time()
         try:
             if not ensure_connected():
                 time.sleep(10)
@@ -232,12 +242,22 @@ def main():
             if cur_resolved:
                 disp_title, disp_artist, lines = cur_resolved[1], cur_resolved[2], cur_resolved[3]
             else:
-                disp_title, disp_artist, lines = sess["title"], sess["artist"], []
+                disp_title = stable_title or sess["title"]
+                disp_artist = (pm.group(2).strip() if pm else sess["artist"])
+                lines = []
             if sess["state"] == 3 and sess["uptime_ms"]:
                 pos = sess["position"] + max(0, sess["uptime_ms"] - sess["updated"])
             else:
                 pos = sess["position"]
-            lyric = current_line(lines, pos) if lines else ""
+            if lines:
+                lyric = current_line(lines, pos)
+            else:
+                # Fallback: NetEase rotates what looks like the current lyric
+                # line through the BT title field. Use it when it is not a
+                # credit line and not the song name itself.
+                cand = sess["title"].strip()
+                credit = any(w in cand for w in ("作词", "作曲", "编曲", "作詞", "編曲", "演唱"))
+                lyric = cand if (cand and cand != stable_title and not credit and len(cand) <= 60) else ""
             state_str = "playing" if sess["state"] == 3 else "paused"
             key = (state_str, disp_title, lyric)
             now = time.time()
@@ -247,7 +267,8 @@ def main():
                 last_sent = now
         except Exception as e:
             log(f"loop error: {e}")
-        time.sleep(POLL_SEC)
+        elapsed = time.time() - loop_start
+        time.sleep(max(0.2, POLL_SEC - elapsed))
 
 
 if __name__ == "__main__":

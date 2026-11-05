@@ -9,7 +9,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "my.app.calendarkiosk"
+        applicationId = "my.app.calendarkiosk.roze"
         minSdk = 21
         targetSdk = 36
         versionCode = 1

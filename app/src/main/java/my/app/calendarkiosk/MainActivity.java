@@ -41,6 +41,8 @@ public class MainActivity extends AppCompatActivity {
     private static final String K_WORDS = "words", K_C_NOR = "c_nor", K_C_IMP = "c_imp";
     // フッター個別に制御するためのキー
     private static final String K_SHOW_FOOT_1 = "show_foot_1", K_SHOW_FOOT_2 = "show_foot_2";
+    // 再生中バーの設定キー
+    private static final String K_NP_TITLE = "np_title", K_NP_LYRIC = "np_lyric", K_NP_SHOW = "np_show";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -79,10 +81,12 @@ public class MainActivity extends AppCompatActivity {
             public void onReceive(Context context, Intent intent) {
                 String state = intent.getStringExtra("state");
                 handler.removeCallbacks(npHideRunnable);
-                if (state == null || state.equals("stopped")) {
+                SharedPreferences p = getSharedPreferences(PREF_NAME, MODE_PRIVATE);
+                if (state == null || state.equals("stopped") || !p.getBoolean(K_NP_SHOW, true)) {
                     nowPlayingArea.setVisibility(View.GONE);
                     return;
                 }
+                applyNpSizes(p);
                 String title = b64decode(intent.getStringExtra("title_b64"));
                 String artist = b64decode(intent.getStringExtra("artist_b64"));
                 String lyric = b64decode(intent.getStringExtra("lyric_b64"));
@@ -93,11 +97,30 @@ public class MainActivity extends AppCompatActivity {
                 npLyric.setText(lyric);
                 npLyric.setVisibility(lyric.isEmpty() ? View.GONE : View.VISIBLE);
                 nowPlayingArea.setVisibility(View.VISIBLE);
+                if (!lyric.isEmpty()) npLyric.post(() -> fitLyricSize(p, lyric));
                 // デーモンが死んだ場合にバーが残り続けないための保険
                 handler.postDelayed(npHideRunnable, 30 * 1000);
             }
         };
         registerReceiver(npReceiver, new IntentFilter(ACTION_NOW_PLAYING));
+    }
+
+    private void applyNpSizes(SharedPreferences p) {
+        if (npTitle != null) npTitle.setTextSize(p.getInt(K_NP_TITLE, 13));
+        if (npLyric != null) npLyric.setTextSize(p.getInt(K_NP_LYRIC, 19));
+    }
+
+    // 長い歌詞行が見切れないよう、収まる範囲で自動縮小する (下限9sp)
+    private void fitLyricSize(SharedPreferences p, String text) {
+        if (npLyric == null || text == null || text.isEmpty()) return;
+        float want = p.getInt(K_NP_LYRIC, 19);
+        int w = npLyric.getWidth() - npLyric.getPaddingLeft() - npLyric.getPaddingRight();
+        if (w <= 0) { npLyric.setTextSize(want); return; }
+        android.graphics.Paint paint = new android.graphics.Paint();
+        paint.setTextSize(want * getResources().getDisplayMetrics().scaledDensity);
+        float tw = paint.measureText(text);
+        float size = (tw > w) ? Math.max(9f, want * (w / tw)) : want;
+        npLyric.setTextSize(size);
     }
 
     @Override
@@ -145,7 +168,8 @@ public class MainActivity extends AppCompatActivity {
         String[] items = {
                 "自動サイズ計算: " + (p.getBoolean(K_AUTO, true) ? "ON" : "OFF"),
                 "メイン：上限", "メイン：下限", "メイン：補正",
-                "メイン：固定サイズ", "サイド：サイズ", "概要：サイズ", "日付縮小率(%)"
+                "メイン：固定サイズ", "サイド：サイズ", "概要：サイズ", "日付縮小率(%)",
+                "再生中バー：曲名サイズ", "再生中バー：歌詞サイズ"
         };
         new AlertDialog.Builder(this).setItems(items, (d, i) -> {
             if(i==0) { p.edit().putBoolean(K_AUTO, !p.getBoolean(K_AUTO, true)).apply(); fetchCalendarData(); }
@@ -156,7 +180,9 @@ public class MainActivity extends AppCompatActivity {
             else if(i==4) showSB(items[i], K_FIX, 4, 120, 25);
             else if(i==5) showSB(items[i], K_SIDE, 4, 80, 14);
             else if(i==6) showSB(items[i], K_FOOT, 4, 80, 18);
-            else showSB(items[i], K_RATIO, 10, 100, 80);
+            else if(i==7) showSB(items[i], K_RATIO, 10, 100, 80);
+            else if(i==8) showSB(items[i], K_NP_TITLE, 8, 30, 13);
+            else showSB(items[i], K_NP_LYRIC, 8, 48, 19);
         }).show();
     }
 
@@ -164,10 +190,12 @@ public class MainActivity extends AppCompatActivity {
         SharedPreferences p = getSharedPreferences(PREF_NAME, MODE_PRIVATE);
         boolean showFoot1 = p.getBoolean(K_SHOW_FOOT_1, true);
         boolean showFoot2 = p.getBoolean(K_SHOW_FOOT_2, true);
+        boolean showNp = p.getBoolean(K_NP_SHOW, true);
         String[] items = {
                 "フッター行1(概要): " + (showFoot1 ? "ON" : "OFF"),
                 "フッター行2(重要): " + (showFoot2 ? "ON" : "OFF"),
-                "メイン幅(%)", "概要高さ(px)", "メイン左列上限", "サイド左列上限"
+                "メイン幅(%)", "概要高さ(px)", "メイン左列上限", "サイド左列上限",
+                "再生中バー: " + (showNp ? "ON" : "OFF")
         };
         new AlertDialog.Builder(this).setItems(items, (d, i) -> {
             if(i==0) { p.edit().putBoolean(K_SHOW_FOOT_1, !showFoot1).apply(); fetchCalendarData(); }
@@ -175,7 +203,8 @@ public class MainActivity extends AppCompatActivity {
             else if(i==2) showSB(items[i], K_W, 20, 95, 67);
             else if(i==3) showSB(items[i], K_H, 40, 500, 100);
             else if(i==4) showSB(items[i], K_FOLD, 1, 30, 6);
-            else showSB(items[i], K_SIDE_FOLD, 1, 40, 10);
+            else if(i==5) showSB(items[i], K_SIDE_FOLD, 1, 40, 10);
+            else { p.edit().putBoolean(K_NP_SHOW, !showNp).apply(); if (showNp && nowPlayingArea != null) nowPlayingArea.setVisibility(View.GONE); }
         }).show();
     }
 
@@ -252,6 +281,7 @@ public class MainActivity extends AppCompatActivity {
 
         SharedPreferences p = getSharedPreferences(PREF_NAME, MODE_PRIVATE);
         applyLayout(p);
+        applyNpSizes(p);
         mainScrollLeft.removeAllViews(); mainScrollRight.removeAllViews();
         sideScrollLeft.removeAllViews(); sideScrollRight.removeAllViews();
 
