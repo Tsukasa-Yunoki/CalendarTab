@@ -31,8 +31,6 @@ public class MainActivity extends AppCompatActivity {
     private TextView footerTimeTable, footerImportant, statusText;
     private Handler handler = new Handler();
     private Runnable updateRunnable;
-    private int tapCount = 0;
-    private long lastTapTime = 0;
 
     // 再生中表示 (Ubuntu側デーモンから adb ブロードキャストで受け取る)
     public static final String ACTION_NOW_PLAYING = "my.app.calendarkiosk.NOW_PLAYING";
@@ -75,12 +73,9 @@ public class MainActivity extends AppCompatActivity {
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         setContentView(R.layout.activity_main);
         initViews();
-        statusText.setOnClickListener(v -> {
-            long now = System.currentTimeMillis();
-            if (now - lastTapTime < 500) tapCount++; else tapCount = 1;
-            lastTapTime = now;
-            if (tapCount == 3) { tapCount = 0; showTopMenu(); }
-        });
+        // 設定の入口は「画面のどこでも長押し」 (旧: Update欄の3回タップは廃止)
+        View rootView = ((ViewGroup) findViewById(android.R.id.content)).getChildAt(0);
+        rootView.setOnLongClickListener(v -> { showTopMenu(); return true; });
 
         updateRunnable = new Runnable() {
             @Override
@@ -488,7 +483,7 @@ public class MainActivity extends AppCompatActivity {
             float fs = p.getInt(K_FOOT, 18);
             footerTimeTable.setText(tt); footerTimeTable.setTextSize(fs); footerTimeTable.setTextColor(cNor);
             footerImportant.setText(imS); footerImportant.setTextSize(fs); footerImportant.setTextColor(cI);
-            statusText.setText("Update: " + new SimpleDateFormat("HH:mm").format(new Date()));
+            statusText.setText(new SimpleDateFormat("HH:mm").format(new Date()));
         } catch (Exception e) { e.printStackTrace(); } finally { if(cursor != null) cursor.close(); }
         applyFullImmersiveMode();
     }
