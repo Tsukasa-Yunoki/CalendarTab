@@ -5,10 +5,15 @@ import android.content.*;
 import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.graphics.Color;
+import android.hardware.Sensor;
+import android.hardware.SensorEvent;
+import android.hardware.SensorEventListener;
+import android.hardware.SensorManager;
 import android.net.Uri;
 import android.os.*;
 import android.provider.CalendarContract;
 import android.util.Base64;
+import android.util.Log;
 import android.text.*;
 import android.text.style.*;
 import android.view.*;
@@ -44,6 +49,26 @@ public class MainActivity extends AppCompatActivity {
     // 再生中バーの設定キー
     private static final String K_NP_TITLE = "np_title", K_NP_LYRIC = "np_lyric", K_NP_SHOW = "np_show";
 
+    // 明るさ連動で画面を消す機能 (アプリ内蔵・光センサーのイベント駆動、時刻は見ない)
+    private static final String K_AUTO_DIM = "auto_dim";
+    // 限りなく暗い時だけ消し、明るくなったらすぐ戻すためのしきい値
+    private static final float DIM_OFF_LUX = 2f;
+    private static final float DIM_ON_LUX = 10f;
+    private static final long DIM_OFF_DELAY_MS = 120 * 1000L; // 暗さが2分続いたら消す
+    private static final long DIM_ON_DELAY_MS = 3 * 1000L;    // 明るさを数秒見たら戻す
+    private static final long DIM_TAP_OVERRIDE_MS = 60 * 1000L; // 消灯中にタップしたら1分だけ表示
+    private SensorManager sensorManager;
+    private Sensor lightSensor;
+    private View dimOverlay;
+    private boolean dimmed = false, dimOffPending = false, dimOnPending = false;
+    private float lastLux = -1f;
+    private long dimOverrideUntil = 0;
+    private Runnable dimOffRunnable, dimOnRunnable, dimOverrideRunnable;
+    private final SensorEventListener lightListener = new SensorEventListener() {
+        @Override public void onSensorChanged(SensorEvent e) { onLuxChanged(e.values[0]); }
+        @Override public void onAccuracyChanged(Sensor s, int a) {}
+    };
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -65,6 +90,7 @@ public class MainActivity extends AppCompatActivity {
             }
         };
         setupNowPlaying();
+        setupAutoDim();
         checkPermission();
     }
 
@@ -123,9 +149,97 @@ public class MainActivity extends AppCompatActivity {
         npLyric.setTextSize(size);
     }
 
+    // ---- 明るさ連動 (光センサー) ----
+    // 一般アプリからは端末の電源を切れないので、消灯は「輝度最低 + 真っ黒な面」で行う。
+    // 端末自体は起きたままなのでセンサーが生き続け、明るくなったら確実に復帰できる。
+    private void setupAutoDim() {
+        ViewGroup root = (ViewGroup) ((ViewGroup) findViewById(android.R.id.content)).getChildAt(0);
+        dimOverlay = new View(this);
+        dimOverlay.setBackgroundColor(Color.BLACK);
+        dimOverlay.setVisibility(View.GONE);
+        dimOverlay.setOnTouchListener((v, ev) -> {
+            if (ev.getAction() == MotionEvent.ACTION_DOWN && dimmed) {
+                // 夜中にタップしたら1分だけ表示し、まだ暗ければ自動で消灯に戻る
+                dimOverrideUntil = SystemClock.elapsedRealtime() + DIM_TAP_OVERRIDE_MS;
+                setDimmed(false);
+                handler.removeCallbacks(dimOverrideRunnable);
+                handler.postDelayed(dimOverrideRunnable, DIM_TAP_OVERRIDE_MS);
+            }
+            return true;
+        });
+        root.addView(dimOverlay, new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        dimOffRunnable = () -> {
+            dimOffPending = false;
+            if (isDimEnabled() && !dimmed && lastLux >= 0 && lastLux <= DIM_OFF_LUX
+                    && SystemClock.elapsedRealtime() >= dimOverrideUntil) setDimmed(true);
+        };
+        dimOnRunnable = () -> {
+            dimOnPending = false;
+            if (isDimEnabled() && dimmed && lastLux >= DIM_ON_LUX) setDimmed(false);
+        };
+        dimOverrideRunnable = () -> {
+            if (isDimEnabled() && !dimmed && lastLux >= 0 && lastLux <= DIM_OFF_LUX) setDimmed(true);
+        };
+        sensorManager = (SensorManager) getSystemService(Context.SENSOR_SERVICE);
+        if (sensorManager != null) lightSensor = sensorManager.getDefaultSensor(Sensor.TYPE_LIGHT);
+    }
+
+    private boolean isDimEnabled() {
+        return getSharedPreferences(PREF_NAME, MODE_PRIVATE).getBoolean(K_AUTO_DIM, true);
+    }
+
+    private void onLuxChanged(float lux) {
+        lastLux = lux;
+        if (!isDimEnabled() || lightSensor == null) return;
+        long now = SystemClock.elapsedRealtime();
+        if (!dimmed) {
+            if (lux <= DIM_OFF_LUX) {
+                if (now >= dimOverrideUntil && !dimOffPending) {
+                    dimOffPending = true;
+                    handler.postDelayed(dimOffRunnable, DIM_OFF_DELAY_MS);
+                }
+            } else if (dimOffPending) {
+                dimOffPending = false;
+                handler.removeCallbacks(dimOffRunnable);
+            }
+        } else {
+            if (lux >= DIM_ON_LUX) {
+                if (!dimOnPending) {
+                    dimOnPending = true;
+                    handler.postDelayed(dimOnRunnable, DIM_ON_DELAY_MS);
+                }
+            } else if (dimOnPending) {
+                dimOnPending = false;
+                handler.removeCallbacks(dimOnRunnable);
+            }
+        }
+    }
+
+    private void setDimmed(boolean d) {
+        if (dimmed == d) return;
+        dimmed = d;
+        if (dimOverlay != null) dimOverlay.setVisibility(d ? View.VISIBLE : View.GONE);
+        WindowManager.LayoutParams lp = getWindow().getAttributes();
+        lp.screenBrightness = d ? WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_OFF
+                                : WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE;
+        getWindow().setAttributes(lp);
+        Log.i("AutoDim", "dimmed=" + d + " lux=" + lastLux);
+    }
+
+    private void cancelDimTimers() {
+        if (dimOffRunnable != null) handler.removeCallbacks(dimOffRunnable);
+        if (dimOnRunnable != null) handler.removeCallbacks(dimOnRunnable);
+        if (dimOverrideRunnable != null) handler.removeCallbacks(dimOverrideRunnable);
+        dimOffPending = false;
+        dimOnPending = false;
+    }
+
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        cancelDimTimers();
+        if (sensorManager != null) { try { sensorManager.unregisterListener(lightListener); } catch (Exception ignored) {} }
         if (npReceiver != null) { try { unregisterReceiver(npReceiver); } catch (Exception ignored) {} }
     }
 
@@ -134,6 +248,15 @@ public class MainActivity extends AppCompatActivity {
         super.onResume();
         handler.removeCallbacks(updateRunnable);
         handler.post(updateRunnable);
+        if (sensorManager != null && lightSensor != null) {
+            sensorManager.registerListener(lightListener, lightSensor, SensorManager.SENSOR_DELAY_NORMAL);
+        }
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        if (sensorManager != null) sensorManager.unregisterListener(lightListener);
     }
 
     private void initViews() {
@@ -191,11 +314,13 @@ public class MainActivity extends AppCompatActivity {
         boolean showFoot1 = p.getBoolean(K_SHOW_FOOT_1, true);
         boolean showFoot2 = p.getBoolean(K_SHOW_FOOT_2, true);
         boolean showNp = p.getBoolean(K_NP_SHOW, true);
+        boolean autoDim = p.getBoolean(K_AUTO_DIM, true);
         String[] items = {
                 "フッター行1(概要): " + (showFoot1 ? "ON" : "OFF"),
                 "フッター行2(重要): " + (showFoot2 ? "ON" : "OFF"),
                 "メイン幅(%)", "概要高さ(px)", "メイン左列上限", "サイド左列上限",
-                "再生中バー: " + (showNp ? "ON" : "OFF")
+                "再生中バー: " + (showNp ? "ON" : "OFF"),
+                "暗くなったら画面を消す: " + (autoDim ? "ON" : "OFF")
         };
         new AlertDialog.Builder(this).setItems(items, (d, i) -> {
             if(i==0) { p.edit().putBoolean(K_SHOW_FOOT_1, !showFoot1).apply(); fetchCalendarData(); }
@@ -204,7 +329,8 @@ public class MainActivity extends AppCompatActivity {
             else if(i==3) showSB(items[i], K_H, 40, 500, 100);
             else if(i==4) showSB(items[i], K_FOLD, 1, 30, 6);
             else if(i==5) showSB(items[i], K_SIDE_FOLD, 1, 40, 10);
-            else { p.edit().putBoolean(K_NP_SHOW, !showNp).apply(); if (showNp && nowPlayingArea != null) nowPlayingArea.setVisibility(View.GONE); }
+            else if(i==6) { p.edit().putBoolean(K_NP_SHOW, !showNp).apply(); if (showNp && nowPlayingArea != null) nowPlayingArea.setVisibility(View.GONE); }
+            else { boolean nv = !autoDim; p.edit().putBoolean(K_AUTO_DIM, nv).apply(); if (!nv) { cancelDimTimers(); setDimmed(false); } }
         }).show();
     }
 
