@@ -44,6 +44,8 @@ public class MainActivity extends AppCompatActivity {
     private static final String K_WORDS = "words", K_C_NOR = "c_nor", K_C_IMP = "c_imp";
     // フッター個別に制御するためのキー
     private static final String K_SHOW_FOOT_1 = "show_foot_1", K_SHOW_FOOT_2 = "show_foot_2";
+    // 重要表示のテスト (実データが無くてもフッター行2にサンプルを出す)
+    private static final String K_IMP_TEST = "imp_test";
     // 再生中バーの設定キー
     private static final String K_NP_TITLE = "np_title", K_NP_LYRIC = "np_lyric", K_NP_SHOW = "np_show";
 
@@ -330,11 +332,15 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void showCustomMenu() {
-        String[] items = {"重要ワード設定 (カンマ区切り)", "通常文字色 (#RRGGBB)", "重要文字色 (#RRGGBB)"};
+        SharedPreferences p = getSharedPreferences(PREF_NAME, MODE_PRIVATE);
+        boolean impTest = p.getBoolean(K_IMP_TEST, false);
+        String[] items = {"重要ワード設定 (カンマ区切り)", "通常文字色 (#RRGGBB)", "重要文字色 (#RRGGBB)",
+                "フッター重要表示テスト: " + (impTest ? "ON" : "OFF")};
         new AlertDialog.Builder(this).setItems(items, (d, i) -> {
             if (i == 0) showEditTextDialog("重要ワード", K_WORDS, "!");
             else if (i == 1) showEditTextDialog("通常文字色", K_C_NOR, "#FFFFFF");
-            else showEditTextDialog("重要文字色", K_C_IMP, "#FF0000");
+            else if (i == 2) showEditTextDialog("重要文字色", K_C_IMP, "#FF0000");
+            else { p.edit().putBoolean(K_IMP_TEST, !impTest).apply(); fetchCalendarData(); }
         }).show();
     }
 
@@ -459,6 +465,14 @@ public class MainActivity extends AppCompatActivity {
                         imS.append("★").append(sdf.format(new Date(start))).append(" ").append(title).append("   ");
                     }
                 }
+            }
+
+            // 重要表示のテスト: ONの間は実データが無くてもフッター行2にサンプルを混ぜる
+            if (p.getBoolean(K_IMP_TEST, false)) {
+                String firstWord = "!";
+                for (String w : iWords) { if (!w.isEmpty()) { firstWord = w; break; } }
+                String td = new SimpleDateFormat("dd(E)", Locale.JAPAN).format(new Date(today0));
+                imS.append("★").append(td).append(" ").append(firstWord).append("テスト表示").append("   ");
             }
 
             // メイン側の溢れ（オーバーフロー）処理
